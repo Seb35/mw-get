@@ -1,0 +1,726 @@
+#!/bin/bash
+# 
+# mw-get
+# – This script aims at automating and simplifying the deployments of MediaWiki.
+# – It mainly targets the maintainers of small MediaWiki installations, to help 
+#    them to install and upgrade MediaWiki and its extensions.
+# 
+# This program is free software. It comes without any warranty, to
+# the extent permitted by applicable law. You can redistribute it
+# and/or modify it under the terms of the Do What The Fuck You Want
+# To Public License, Version 2, as published by Sam Hocevar. See
+# the LICENSE file for more details.
+
+# Constants (until it changes)
+MEDIAWIKI_GIT_HTTP="https://git.wikimedia.org/git/mediawiki"
+MEDIAWIKI_GIT_SSH="ssh://USER@gerrit.wikimedia.org:29418/mediawiki"
+
+MEDIAWIKI_BRANCH="https://www.mediawiki.org/wiki/Template:MW_stable_branch_number?action=render"
+MEDIAWIKI_BRANCH_LTS="https://www.mediawiki.org/wiki/Template:MW_legacy_branch_number?action=render"
+
+MEDIAWIKI_TAR="https://releases.wikimedia.org/mediawiki/BRANCH/mediawiki-VERSION.tar.gz"
+MEDIAWIKI_TAR_ALPHA="https://tools.wmflabs.org/snapshots/builds/mediawiki-core/mediawiki-latest.tar.gz"
+
+# Error messages
+MESSAGE_ERROR_UNEMPTY="Current directory is not empty; it must be."
+MESSAGE_ERROR_NOCOMPOSER="Composer is not installed; it must be."
+MESSAGE_ERROR_NOBETARELEASE="There is no beta release for now; check www.mediawiki.org to see the next release."
+MESSAGE_ERROR_NOBETATARBALL="There is no beta release for now, at least in tarball version (perhaps in Git); check www.mediawiki.org to see the next release."
+MESSAGE_ERROR_NOSUCHRELEASE="There is no such release; check www.mediawiki.org to see what releases really exist."
+MESSAGE_ERROR_UNSUPPORTEDVCS="You are using SVN or CVS; these are not supported by this script."
+MESSAGE_ERROR_BACKUPONWEB="If you save the backup in the specified directory, it will be viewable on the web or to the users: bad privacy practice."
+MESSAGE_ERROR_NOSUCHEXTENSION="There is no such extension; check www.mediawiki.org to see what extensions really exist."
+MESSAGE_ERROR_NOSUCHSKIN="There is no such skin; check www.mediawiki.org to see what skins really exist."
+
+# Some commands
+# mw-get install 1.24 --tests-cache=http://127.0.0.1/mediawiki/BRANCH/mediawiki-VERSION.tar.gz
+# mw-get install 1.24.1 --tests-cache=http://127.0.0.1/mediawiki/BRANCH/mediawiki-VERSION.tar.gz
+# mw-get install --git
+# mw-get install lts --git=/srv/git/mediawiki
+# mw-get install 1.24.1 Nostalgia Vector extensions/Vector Interwiki --git=/srv/git/mediawiki
+# mw-get upgrade
+# mw-get install 1.23.7 Nostalgia Vector extensions/Vector Interwiki --git=/srv/git/mediawiki
+# mw-get upgrade
+# mw-get major-upgrade 1.24
+
+
+################
+# Installation #
+################
+
+# Install MediaWiki
+install_mediawiki() {
+  
+  # Current directory must be empty
+  if [ -n "`ls -A`" ]; then
+    echo "$MESSAGE_ERROR_UNEMPTY" 1>&2
+    exit 1
+  fi
+  
+  wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+  
+  install_mediawiki_$INSTALL_METHOD
+}
+
+# Download and install MediaWiki with Git
+install_mediawiki_git() {
+  
+  # Clone repository
+  git clone $GIT_OPTIONS "$GIT_REPOSITORY/core.git" .
+  
+  # Add configuration settings
+  [ -n "$BACKUP" ] && git config mediawiki.backup "$BACKUP"
+  [ -n "$PREPROD" ] && git config mediawiki.preprod "$PREPROD"
+  git config mediawiki.dev "$DEV"
+  
+  # Next configure the version
+  install_mediawiki_version_git
+}
+
+# Configure the version
+install_mediawiki_version_git() {
+  
+  # Beta release
+  # Note: `sort -n -t_ -k1 -k2` is used instead of `sort -V` to improve portability to Mac OS X
+  if [ "$wgVersion" = "beta" ]; then
+    wgBranch=`git branch -r | grep origin/REL | sed 's/ *origin\/REL//' | sort -n -t_ -k1 -k2 | tail -n 1 | sed 's/_/./'`
+    wgVersion="$wgBranch"
+    if [ "`git tag -l | grep $wgBranch.0`" != "" ]; then
+      echo "$MESSAGE_ERROR_NOBETARELEASE" 1>&2
+      exit 1
+    fi
+    
+  # Last release
+  elif [ -z "$wgVersion" ]; then
+    wgBranch=`git branch -r | grep origin/REL | sed "s/ *origin\/REL//" | sort -n -t_ -k1 -k2 | tail -n 1 | sed 's/_/./'`
+    # The last branch could be a beta release, check if a tag has been issued
+    if [ "`git tag -l | grep $wgBranch.0`" = "" ]; then
+      wgBranch=`git branch -r | grep origin/REL | sed "s/ *origin\/REL//" | sort -n -t_ -k1 -k2 | tail -n 2 | head -n 1 | sed 's/_/./'`
+    fi
+    wgVersion="$wgBranch"
+    
+  # Release branch 1.XX
+  elif [ "$wgVersion" = "$wgBranch" -a "$wgVersion" != "alpha" ]; then
+    if [ "`git branch -r | grep origin/REL | sed 's/ *origin\/REL//' | sed 's/_/./' | grep \"$wgBranch\"`" = "" ]; then
+      echo "$MESSAGE_ERROR_NOSUCHRELEASE" 1>&2
+      exit 1
+    fi
+    
+  # Specific tag 1.XX.YY
+  elif [ "$wgVersion" != "alpha" ]; then
+    
+    if [ "`git tag -l | grep \"$wgVersion\"`" = "" ]; then
+      echo "$MESSAGE_ERROR_NOSUCHRELEASE" 1>&2
+      exit 1
+    fi
+  fi
+  
+  # Alpha release
+  local branch="`git rev-parse --abbrev-ref HEAD`"
+  if [ "$wgVersion" = "alpha" ]; then
+    
+    if [ "`git rev-parse --symbolic-full-name \"$branch@{upstream}\" | sed 's/refs\/remotes\/origin\///'`" = "master" ]; then
+      git rebase origin/master
+    else
+      git checkout master
+    fi
+    wgBranch="master"
+    
+  # Version in some release branch
+  else
+    
+    git branch "REL${wgBranch/\./_}" "origin/REL${wgBranch/\./_}" 1>&2
+    git checkout "REL${wgBranch/\./_}" 1>&2
+    
+    # Specific version wanted
+    if [ "$wgVersion" != "$wgBranch" ]; then
+      git reset --hard "$wgVersion" 1>&2
+    fi
+    
+  fi
+  
+  # Execute Composer
+  execute_composer
+}
+
+install_extensions_git() {
+  
+  # Get MediaWiki version and branch
+  local wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+  local is_extension=""
+  
+  for EXTENSION in $EXTENSIONS; do
+    
+    # Check if it is a skin or an extension
+    # Nostalgia and Vector are both extensions and skins, without further precision they are considered skins
+    is_extension=""
+    if [ "${EXTENSION:0:11}" = "extensions/" ]; then
+      is_extension="true"
+      EXTENSION="${EXTENSION:11}"
+    elif [ "${EXTENSION:0:6}" = "skins/" ]; then
+      is_extension="false"
+      EXTENSION="${EXTENSION:6}"
+    elif [ "$EXTENSION" = "Nostalgia" -o "$EXTENSION" = "Vector" ]; then
+      is_extension="false"
+    fi
+    
+    # Check if the name exists and clone the repository
+    if [ "$is_extension" = "true" -o -z "$is_extension" ]; then
+      if [ -d "extensions/$EXTENSION" ]; then
+        is_extension="true"
+      else
+        git clone $GIT_OPTIONS "$GIT_REPOSITORY/extensions/$EXTENSION.git" "extensions/$EXTENSION"
+        if [ "$?" = "0" ]; then
+          is_extension="true"
+        else
+          if [ "$is_extension" = "true" ]; then
+            echo "$MESSAGE_ERROR_NOSUCHEXTENSION" 1>&2
+            continue
+          fi
+        fi
+      fi
+      if [ "$is_extension" = "true" ]; then
+        echo upgrade extension 1>&2
+        cd "extensions/$EXTENSION"
+        upgrade_extension_git
+        cd ../..
+      fi
+    fi
+    
+    if [ "$is_extension" = "false" -o -z "$is_extension" ]; then
+      if [ -d "skins/$EXTENSION" ]; then
+        is_extension="false"
+      else
+        git clone $GIT_OPTIONS "$GIT_REPOSITORY/skins/$EXTENSION.git" "skins/$EXTENSION"
+        if [ "$?" = "0" ]; then
+          is_extension="false"
+        else
+          if [ "$is_extension" = "false" ]; then
+            echo "$MESSAGE_ERROR_NOSUCHSKIN" 1>&2
+          else
+            echo "$MESSAGE_ERROR_NOSUCHEXTENSIONORSKIN" 1>&2
+          fi
+          continue
+        fi
+      fi
+      if [ "$is_extension" = "false" ]; then
+        echo upgrade skin $EXTENSION 1>&2
+        cd "skins/$EXTENSION"
+        upgrade_extension_git
+        cd ../..
+      fi
+    fi
+    
+  done
+}
+
+# Download and install MediaWiki with tarballs
+install_mediawiki_tar() {
+  
+  # Beta release
+  # this is a bit much hacky but I didn’t find a better way to achieve that
+  # (no template on MW.org, beta and rc sometimes mixed, afaik no other
+  # automatic computer-readable list of releases.)
+  if [ "$wgVersion" = "beta" ]; then
+    # TODO this will not work: there is no branch, you have to find the last branch
+    local stable_branch="`wget --output-document=- \"$MEDIAWIKI_BRANCH\" 2>/dev/null | head -n 1 | sed 's/<\/*p>//g'`"
+    local stable_branch_1="${stable_branch%.*}"
+    local stable_branch_2="${stable_branch#*.}"
+    local beta_branch="$stable_branch_1.`expr $stable_branch_2 + 1`"
+    wgVersion="`tarball_list \"$beta_branch\" | grep '[a-z]' | sort -n -t. -k1 -k2 -k3 | tail -n 1`"
+    wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+    if [ -z "$wgVersion" ]; then
+      echo "$MESSAGE_ERROR_NOBETATARBALL" 1>&2
+      exit 1
+    fi
+    
+  # Last release
+  elif [ -z "$wgVersion" ]; then
+    wgBranch="`wget --output-document=- \"$MEDIAWIKI_BRANCH\" 2>/dev/null | head -n 1 | sed 's/<\/*p>//g'`"
+    wgVersion="$wgBranch"
+    if [ -z "$wgVersion" ]; then
+      echo "$MESSAGE_ERROR_NOSUCHRELEASE" 1>&2
+      exit 1
+    fi
+    
+  fi
+  
+  # Get last version in branch
+  if [ "$wgVersion" = "$wgBranch" -a "$wgVersion" != "alpha" ]; then
+    wgVersion="`tarball_list \"$wgBranch\" | grep -v '[a-z]' | sort -n -t. -k1 -k2 -k3 | tail -n 1`"
+  fi
+  
+  # Alpha release
+  if [ "$wgVersion" = "alpha" ]; then
+    link="$MEDIAWIKI_TAR_ALPHA"
+    [ -n "$TESTSCACHE" ] && link="$TESTSCACHE"
+    
+  # Regular release (possibly beta)
+  else
+    link="$MEDIAWIKI_TAR"
+    [ -n "$TESTSCACHE" ] && link="$TESTSCACHE"
+    link="${link/BRANCH/$wgBranch}"
+    link="${link/VERSION/$wgVersion}"
+    
+  fi
+  
+  # Download release
+  wget --output-document="mediawiki-$wgVersion.tar.gz" "$link"
+  
+  # Extract release
+  tar xzf "mediawiki-$wgVersion.tar.gz"
+  rm "mediawiki-$wgVersion.tar.gz"
+  if [ -d "mediawiki-$wgVersion" ]; then
+    mv "mediawiki-$wgVersion"/* .
+    rmdir "mediawiki-$wgVersion"
+  fi
+  
+  # Add configuration settings
+  mkdir -p cache
+  echo -e "[mediawiki]\n\tbackup = $BACKUP\n\tpreprod = $PREPROD" > cache/config
+  
+  # Execute Composer
+  execute_composer
+}
+
+
+###########
+# Upgrade #
+###########
+
+# Upgrade MediaWiki
+upgrade_mediawiki() {
+  
+  # Backup
+  backup_mediawiki
+  
+  # If preprod is asked, create a directory; anyway do the actual upgrade
+  if [ -n "$PREPROD" ]; then
+    local current_directory="`pwd`"
+    mkdir -p "$PREPROD"
+    cd "$PREPROD"
+    upgrade_mediawiki_$INSTALL_METHOD
+    cd "$current_directory"
+  else
+    upgrade_mediawiki_$INSTALL_METHOD
+  fi
+}
+
+# Upgrade MediaWiki versionned with Git
+upgrade_mediawiki_git() {
+  
+  # Get versions
+  if [ -z "$wgVersion" ]; then
+    wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  fi
+  wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+  local wgSitename="`grep \\$wgSitename LocalSettings.php | grep ^\\$wgSitename | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/' | sed 's/ /_/g'`"
+  
+  # Update from distant server
+  git remote update origin --prune 1>&2
+  
+  # No more work if we are up-to-date
+  if [ "`git rev-parse HEAD`" = "`git rev-parse \"origin/REL${wgBranch/\./_}\"`" ]; then
+    return
+  fi
+  
+  # Tag this version if it is needed to return to
+  tag_mediawiki_git before
+  
+  # Pull or rebase depending if changes have been committed
+  if [ "`git rev-list \"$wgVersion\" | head -n 1`" = "`git rev-parse HEAD`" ]; then
+    git merge "origin/REL${wgBranch/\./_}" 1>&2
+  else
+    git rebase "origin/REL${wgBranch/\./_}" 1>&2
+  fi
+  wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  
+  # Execute Composer
+  execute_composer
+  
+  # Update database
+  php maintenance/update.php --quick
+  
+  # Tag fresh new version
+  tag_mediawiki_git after
+}
+
+# Upgrade an extension or a skin
+upgrade_extension_git() {
+  
+  if [ "`git branch -r | grep origin/REL | sed 's/ *origin\/REL//' | sed 's/_/./' | grep \"$wgBranch\"`" != "" ]; then
+    
+    # No more work if we are up-to-date
+    echo "`git rev-parse HEAD`" = "`git rev-parse \"origin/REL${wgBranch/\./_}\"`" 1>&2
+    if [ "`git rev-parse HEAD`" = "`git rev-parse \"origin/REL${wgBranch/\./_}\"`" ]; then
+      echo "`git rev-parse --abbrev-ref HEAD`" != "REL${wgBranch/\./_}" 1>&2
+      if [ "`git rev-parse --abbrev-ref HEAD`" != "REL${wgBranch/\./_}" ]; then
+        git checkout -b "REL${wgBranch/\./_}" "origin/REL${wgBranch/\./_}" 1>&2
+      fi
+      return
+    fi
+    
+    # Tag this version if it is needed to return to
+    local branch="`git rev-parse --abbrev-ref HEAD`"
+    wgVersion="${branch/_/.}-`git rev-parse --short HEAD`"
+    tag_mediawiki_git before
+    
+    # Change the version
+    if [ "`git rev-parse --abbrev-ref HEAD`" != "REL${wgBranch/\./_}" ]; then
+      echo git checkout -b "REL${wgBranch/\./_}" "origin/REL${wgBranch/\./_}" 1>&2
+      git checkout -b "REL${wgBranch/\./_}" "origin/REL${wgBranch/\./_}" 1>&2
+    else
+      echo git merge "origin/REL${wgBranch/\./_}" 1>&2
+      git merge "origin/REL${wgBranch/\./_}" 1>&2
+    fi
+    
+    # Tag fresh new version
+    wgVersion="$wgBranch-`git rev-parse --short HEAD`"
+    tag_mediawiki_git after
+    
+  else
+    
+    echo todo: search the latest commit before the MW release 1>&2 # TODO
+    
+  fi
+}
+
+# Upgrade MediaWiki with tarballs
+upgrade_mediawiki_tar() {
+  
+  # Get versions
+  local wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local wgSitename="`grep \\$wgSitename LocalSettings.php | grep ^\\$wgSitename | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/' | sed 's/ /_/g'`"
+  local wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+  
+  # Get the newest version
+  wgVersion="`tarball_list \"$current_branch\" | tail -n 1`"
+  
+  # No more work if we are up-to-date
+  if [ "$wgVersion" = "$current_version" ]; then
+    return
+  fi
+  
+  # Download release
+  wget --output-document="mediawiki-$wgVersion.tar.gz" "$link"
+  
+  # Apply the patches
+  # TODO
+  wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  
+  # Execute Composer
+  execute_composer
+  
+  # Update database
+  php maintenance/update.php --quick
+}
+
+
+#################
+# Major upgrade #
+#################
+
+# Major upgrade MediaWiki
+major_upgrade_mediawiki() {
+  
+  # Backup
+  backup_mediawiki
+  
+  # If preprod is asked, create a directory; anyway do the actual upgrade
+  if [ -n "$PREPROD" ]; then
+    local current_directory="`pwd`"
+    mkdir -p "$PREPROD"
+    cd "$PREPROD"
+    major_upgrade_mediawiki_$INSTALL_METHOD
+    cd "$current_directory"
+  else
+    major_upgrade_mediawiki_$INSTALL_METHOD
+  fi
+}
+
+major_upgrade_mediawiki_git() {
+  
+  # Get versions
+  local wgNewVersion="$wgVersion"
+  local wgNewBranch="$wgBranch"
+  local wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local wgSitename="`grep \\$wgSitename LocalSettings.php | grep ^\\$wgSitename | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/' | sed 's/ /_/g'`"
+  local wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+  
+  # Fetch new objects
+  git remote update origin --prune 1>&2
+  
+  # No more work if we are up-to-date
+  if [ "`git rev-parse HEAD`" = "`git rev-parse origin/REL${wgNewVersion/\./_}`" -o "$wgBranch" = "$wgNewVersion" ]; then
+    return
+  fi
+  
+  # Tag this version if it is needed to return to
+  tag_mediawiki_git before
+  
+  # Checkout new branch
+  wgVersion="$wgNewVersion"
+  wgBranch="$wgNewBranch"
+  install_mediawiki_version_git
+  
+  # Update database
+  php maintenance/update.php --quick
+  
+  # Tag fresh new version
+  tag_mediawiki_git after
+}
+
+
+####################
+# Helper functions #
+####################
+
+# Execute Composer
+execute_composer() {
+  
+  # MediaWiki >= 1.25
+  if [ "$wgBranch" = "master" -o "`echo -e \"$wgBranch\n1.25\" | sort -n -t. -k1 -k2`" = "`echo -e \"1.25\n$wgBranch\"`" ]; then
+    
+    # Verify Composer is here
+    if [ -z "`which composer`" ]; then
+      echo "$MESSAGE_ERROR_NOCOMPOSER" 1>&2
+      exit 1
+    fi
+    
+    # Execute Composer
+    if [ "$DEV" = "true" ]; then
+      composer update
+    else
+      echo composer update --no-dev 1>&2
+    fi
+  
+  # 1.22 <= MediaWiki < 1.25
+  elif [ "`echo -e \"$wgBranch\n1.22\" | sort -n -t. -k1 -k2`" = "`echo -e \"1.22\n$wgBranch\"`" -a -n "`which composer`" ]; then
+    
+    # MediaWiki 1.22 and 1.23 have only a file composer-example.json
+    [ ! -f "composer.json" -a -f "composer-example.json" ] && cp composer-example.json composer.json
+    
+    # Execute Composer
+    if [ "$DEV" = "true" ]; then
+      composer update
+    else
+      echo composer update --no-dev 1>&2
+    fi
+  fi
+}
+
+# Backup database
+backup_mediawiki() {
+  
+  if [ -z "$BACKUP" -o ! -f "LocalSettings.php" ]; then
+    return
+  fi
+  
+  # Determine parameters and files
+  local dbserver="`grep \\$wgDBserver LocalSettings.php | grep ^\\$wgDBserver | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local dbname="`grep \\$wgDBname LocalSettings.php | grep ^\\$wgDBname | sed sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local dbuser="`grep \\$wgDBuser LocalSettings.php | grep ^\\$wgDBuser | sed sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local dbpassword="`grep -h \\$wgDBpassword LocalSettings.php | grep ^\\$wgDBpassword | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+  local filename="`date +\"$BACKUP\"`"
+  local tmpfile="${filename##*/}"
+  tmpfile="${filename%/*}/${tmpfile%%.*}.sql"
+  
+  # Error if the backup is in the current directory, since it is likely to be viewable on the Web
+  if [ "${filename%/*}" = "$filename" -o "${filename%/*}" = "`pwd`" ]; then
+    echo "$MESSAGE_ERROR_BACKUPONWEB" 1>&2
+    exit 1
+  fi
+  
+  # Real dump
+  # TODO: adapt for other DB engines
+  mysqldump --host="$dbserver" --user="$dbuser" --password="$dbpassword" "$dbname" > $tmpfile
+  tar czf "$filename" "$tmpfile"
+  rm "$tmpfile"
+}
+
+tag_mediawiki_git() {
+  
+  local operation="$1" # before or after
+  [ -z "$wgSitename" ] && return
+  
+  # Get format
+  local tag_before="`git config mediawiki.deployTagBefore`"
+  local tag_after="`git config mediawiki.deployTagAfter`"
+  [ -z "$tag_before" ] && tag_before="\$wgSitename/%Y%m%d\$DeployIndex-a-\$wgVersion"
+  [ -z "$tag_after"  ] && tag_after="\$wgSitename/%Y%m%d\$DeployIndex-b-\$wgVersion"
+  local tag="$tag_before"
+  [ "$operation" = "after" ] && tag="$tag_after"
+  
+  # Common substitutions
+  tag_before="`date +\"$tag_before\"`"
+  tag_before="${tag_before/\$wgSitename/$wgSitename}"
+  tag="`date +\"$tag\"`"
+  tag="${tag/\$wgSitename/$wgSitename}"
+  
+  # Get DeployIndex number
+  local tag_search="${tag_before/\$DeployIndex/[0-9]*}"
+  tag_search="${tag_search/\$wgVersion/[0-9a-zA-Z\.-]*}"
+  DeployIndex="`git tag -l | grep \"$tag_search\" | wc -l`"
+  [ "$operation" = "after" ] || DeployIndex="`expr "$DeployIndex" + 1`"
+  
+  # Specific substitutions
+  tag="${tag/\$wgVersion/$wgVersion}"
+  tag="${tag/\$DeployIndex/$DeployIndex}"
+  
+  # Finally tag
+  git tag "$tag"
+}
+
+tarball_list() {
+  
+  local wgBranch="$1"
+  local tarlist="${MEDIAWIKI_TAR%/*}/"
+  echo "`wget --output-document=- \"${tarlist/BRANCH/$wgBranch}\" 2>/dev/null | grep '<a href="mediawiki-' | sed 's/.*<a href="mediawiki-//' | sed 's/\.tar\.gz".*//' | grep -v patch | grep -v sig | grep -v asc | grep -v core`"
+}
+
+# Parameters reading
+
+ACTION="$1"
+wgVersion=""
+INSTALL_METHOD="tar"
+GIT_REPOSITORY=""
+GIT_USER=""
+GIT_OPTIONS=""
+DEV="false"
+BACKUP=""
+PREPROD=""
+EXTENSIONS=""
+DEBUG="false"
+TESTSCACHE=""
+
+shift
+for param in "$@"; do
+  case $param in
+    1.[0-9]) wgVersion="$param";;
+    1.[0-9].[0-9]) wgVersion="$param";;
+    1.[0-9][0-9]) wgVersion="$param";;
+    1.[0-9][0-9].[0-9]) wgVersion="$param";;
+    1.[0-9][0-9].[0-9][0-9]) wgVersion="$param";;
+    alpha) wgVersion="alpha";;
+    beta) wgVersion="beta";;
+    lts) wgVersion="lts";;
+    --git-options=*) GIT_OPTIONS="${param:14}";;
+    --git*) INSTALL_METHOD="git"; GIT_REPOSITORY="${param:6}";;
+    --user*) INSTALL_METHOD="git"; GIT_USER="${param:7}";;
+    --tar) INSTALL_METHOD="tar";;
+    --dev) DEV="true";;
+    --backup*) BACKUP="${param:9}";;
+    --preprod*) PREPROD="${param:10}";;
+    --debug) DEBUG="true";;
+    --tests-cache=*) TESTSCACHE="${param:14}";;
+    *) EXTENSIONS="$EXTENSIONS $param";;
+  esac
+done
+
+if [ "$INSTALL_METHOD" = "git" ]; then
+  if [ -z "$GIT_REPOSITORY" ]; then
+    if [ -n "$GIT_USER" ]; then
+      GIT_REPOSITORY="$MEDIAWIKI_GIT_SSH"
+    else
+      GIT_REPOSITORY="$MEDIAWIKI_GIT_HTTP"
+    fi
+  fi
+  GIT_REPOSITORY=`echo "$GIT_REPOSITORY" | sed "s/USER/$GIT_USER/"`
+fi
+
+EXTENSIONS="${EXTENSIONS:1}"
+
+# Change version aliases (lts) to real branch names
+if [ "$wgVersion" = "lts" ]; then
+  wgVersion="`wget --output-document=- \"$MEDIAWIKI_BRANCH_LTS\" 2>/dev/null | head -n 1 | sed 's/<\/*p>//g'`"
+fi
+wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+
+# Save and synchronise config settings
+if [ "$ACTION" != "install" ]; then
+  if [ -d ".git" ]; then
+    [ -n "$BACKUP" ] && git config mediawiki.backup "$BACKUP"
+    [ -n "$PREPROD" ] && git config mediawiki.preprod "$PREPROD"
+    git config mediawiki.dev "$DEV"
+    BACKUP="`git config mediawiki.backup`"
+    PREPROD="`git config mediawiki.preprod`"
+    INSTALL_METHOD="git"
+  elif [ -d ".svn" -o -d ".cvs" ]; then
+    echo "$MESSAGE_ERROR_UNSUPPORTEDVCS" 1>&2
+    exit 1
+  else
+    if [ -f "cache/config" ]; then
+      [ -z "$BACKUP" ] && BACKUP="`cat cache/config | head -n 2 | tail -n 1 | sed 's/\tbackup = //'`"
+      [ -z "$PREPROD" ] && PREPROD="`cat cache/config | head -n 3 | tail -n 1 | sed 's/\tpreprod = //'`"
+    fi
+    echo -e "[mediawiki]\n\tbakup = $BACKUP\n\tpreprod = $PREPROD" > cache/config
+    INSTALL_METHOD="tar"
+  fi
+fi
+
+if [ "$DEBUG" = "true" ]; then
+  echo "ACTION=$ACTION"
+  echo "wgVersion=$wgVersion"
+  echo "wgBranch=$wgBranch"
+  echo "INSTALL_METHOD=$INSTALL_METHOD"
+  echo "GIT_REPOSITORY=$GIT_REPOSITORY"
+  echo "GIT_USER=$GIT_USER"
+  echo "GIT_OPTIONS=$GIT_OPTIONS"
+  echo "DEV=$DEV"
+  echo "BACKUP=$BACKUP"
+  echo "PREPROD=$PREPROD"
+  echo "EXTENSIONS=$EXTENSIONS"
+  echo "TESTSCACHE=$TESTSCACHE"
+fi
+
+# Execute action
+case $ACTION in
+  
+  install)
+    if [ "`ls -A`" = "" ]; then
+      install_mediawiki
+    fi
+    if [ "$INSTALL_METHOD" = "git" ]; then
+      install_extensions_$INSTALL_METHOD
+    fi
+    ;;
+  
+  upgrade)
+    
+    upgrade_mediawiki
+    if [ "$INSTALL_METHOD" = "git" ]; then
+      install_extensions_$INSTALL_METHOD
+    fi
+    ;;
+  
+  major-upgrade)
+    
+    if [ "$INSTALL_METHOD" = "git" ]; then
+      major_upgrade_mediawiki_$INSTALL_METHOD
+      install_extensions_$INSTALL_METHOD
+    else
+      echo Non-implemented
+    fi
+    ;;
+  
+  branch)
+    
+    if [ -f "includes/DefaultSettings.php" ]; then
+      wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+      wgBranch="`echo \"$wgVersion\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+      echo $wgBranch
+    fi
+    ;;
+  
+  version)
+    
+    if [ -f "includes/DefaultSettings.php" ]; then
+      wgVersion="`grep \\$wgVersion includes/DefaultSettings.php | grep ^\\$wgVersion | sed 's/.*[\"'\'']\(.*\)[\"'\''] *;.*/\1/'`"
+      echo $wgVersion
+    fi
+    ;;
+  
+  *) echo "error action" 1>&2; exit 1;;
+esac
+

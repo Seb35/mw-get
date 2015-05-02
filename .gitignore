@@ -1,0 +1,16 @@
+# Editors
+.*.swp
+*~
+
+# Operating systems
+## Mac OS X
+.DS_Store
+## Windows
+Thumbs.db
+
+# Tests
+/tests/mediawiki
+/tests/backups
+/tests/preprod
+/tests/git
+

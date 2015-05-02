@@ -1,0 +1,215 @@
+#!/bin/bash
+# 
+# Test suite of mw-get
+# 
+# This program is free software. It comes without any warranty, to
+# the extent permitted by applicable law. You can redistribute it
+# and/or modify it under the terms of the Do What The Fuck You Want
+# To Public License, Version 2, as published by Sam Hocevar. See
+# the LICENSE file for more details.
+
+MEDIAWIKI_GIT="https://git.wikimedia.org/git/mediawiki"
+MEDIAWIKI_TARLIST="https://releases.wikimedia.org/mediawiki/BRANCH/mediawiki-VERSION.tar.gz"
+MEDIAWIKI_VERSION="https://www.mediawiki.org/wiki/Template:MW_BRANCH_release_number?action=render"
+
+delete_mw() {
+  cd .. && rm -rf mediawiki && mkdir mediawiki && cd mediawiki
+}
+
+mw_test() {
+  local test="$1" # mandatory, must be executable, e.g. "[ -f index.php ]"
+  local message="$2" # mandatory, free text
+  local expected_error="$3" # optional, can be "" or "expected_error"
+  INDEX_TEST="`expr \"$INDEX_TEST\" + 1`"
+  TOTAL_TESTS="`expr \"$TOTAL_TESTS\" + 1`"
+  eval "$test"
+  if [ "$?" != "0" ]; then
+    if [ "$expected_error" = "expected_error" ]; then
+      echo "  $PADDING_GROUP $INDEX_TEST. $message. (EXPECTED ERROR = OK)"
+      PASSED_TESTS="`expr \"$PASSED_TESTS\" + 1`"
+    else
+      echo "X $PADDING_GROUP $INDEX_TEST. $message. (FAILED)"
+      FAILED_TESTS="`expr \"$FAILED_TESTS\" + 1`"
+    fi
+  else
+    if [ "$expected_error" = "expected_error" ]; then
+      echo "X $PADDING_GROUP $INDEX_TEST. $message. (PASSED EXPECTED ERROR = FAILED)"
+      FAILED_TESTS="`expr \"$FAILED_TESTS\" + 1`"
+    else
+      echo "  $PADDING_GROUP $INDEX_TEST. $message. (OK)"
+      PASSED_TESTS="`expr \"$PASSED_TESTS\" + 1`"
+    fi
+  fi
+}
+
+mw_test_title() {
+  local message="$1" # mandatory, free text
+  INDEX_GROUP="`expr \"$INDEX_GROUP\" + 1`"
+  INDEX_TEST="0"
+  echo
+  echo "  $INDEX_GROUP. $message"
+  echo
+  if   [ "$INDEX_GROUP" -lt "10"   ]; then PADDING_GROUP="  "
+  elif [ "$INDEX_GROUP" -lt "100"  ]; then PADDING_GROUP="   "
+  elif [ "$INDEX_GROUP" -lt "1000" ]; then PADDING_GROUP="    "
+  fi
+}
+
+security_release() {
+  local branch="$1" # mandatory, e.g. "1.23"
+  local beta_status="$2" # optional, can be "", "beta", "nobeta"
+  local tarlist="${MEDIAWIKI_TARLIST%/*}/"
+  local version_list="`wget --output-document=- \"${tarlist/BRANCH/$branch}\" 2>/dev/null | grep '<a href="mediawiki-' | sed 's/.*<a href="mediawiki-//' | sed 's/\.tar\.gz".*//' | grep -v patch | grep -v sig | grep -v asc | grep -v core`"
+  [ "$beta_status" = "beta"   ] && version_list="`echo -e \"$version_list\" | grep    '[a-z]'`"
+  [ "$beta_status" = "nobeta" ] && version_list="`echo -e \"$version_list\" | grep -v '[a-z]'`"
+  echo "`echo -e \"$version_list\" | tail -n 1`"
+}
+
+official_release() {
+  local branch="$1" # mandatory, can be "stable", "legacy", "legacy_lts"
+  echo "`wget --output-document=- \"${MEDIAWIKI_VERSION/BRANCH/$branch}\" 2>/dev/null | head -n 1 | sed 's/<\/*p>//g'`"
+}
+
+INDEX_GROUP="0"
+INDEX_TEST="0"
+PADDING_GROUP=""
+PASSED_TESTS="0"
+FAILED_TESTS="0"
+TOTAL_TESTS="0"
+
+# Set up test environment
+rm -rf tests/mediawiki tests/backups tests/preprod
+mkdir -p tests/mediawiki tests/backups tests/preprod
+
+# Compute some version number
+stable_release="`official_release stable`"
+legacy_release="`official_release legacy`"
+REL1_23_release="`security_release 1.23 nobeta`"
+REL1_24_release="`security_release 1.24 nobeta`"
+stable_branch="`echo \"$stable_release\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+legacy_branch="`echo \"$legacy_release\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+REL1_23_branch="`echo \"$REL1_23_release\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+REL1_24_branch="`echo \"$REL1_24_release\" | sed 's/\([0-9]*\)\(\.[0-9]*\).*/\1\2/'`"
+
+# Local git mirrors to speed up the downloads
+if [ -f "tests/git/mediawiki/last_fetch" -a "`eval \"expr \`date +%s\` - \`cat tests/git/mediawiki/last_fetch\`\"`" -gt "86400" ]; then
+  mkdir -p tests/git tests/git/mediawiki tests/git/mediawiki/extensions tests/git/mediawiki/skins
+  cd tests/git/mediawiki
+  [ -d core.git                 ] && cd core.git                 && git remote update origin --prune 2>/dev/null && cd ..
+  [ -d skins/Nostalgia.git      ] && cd skins/Nostalgia.git      && git remote update origin --prune 2>/dev/null && cd ../..
+  [ -d skins/Vector.git         ] && cd skins/Vector.git         && git remote update origin --prune 2>/dev/null && cd ../..
+  [ -d extensions/Vector.git    ] && cd extensions/Vector.git    && git remote update origin --prune 2>/dev/null && cd ../..
+  [ -d extensions/Interwiki.git ] && cd extensions/Interwiki.git && git remote update origin --prune 2>/dev/null && cd ../..
+  [ -d core.git                 ] || git clone --mirror $MEDIAWIKI_GIT/core.git                 core.git                 2>/dev/null
+  [ -d skins/Nostalgia.git      ] || git clone --mirror $MEDIAWIKI_GIT/skins/Nostalgia.git      skins/Nostalgia.git      2>/dev/null
+  [ -d skins/Vector.git         ] || git clone --mirror $MEDIAWIKI_GIT/skins/Vector.git         skins/Vector.git         2>/dev/null
+  [ -d extensions/Vector.git    ] || git clone --mirror $MEDIAWIKI_GIT/extensions/Vector.git    extensions/Vector.git    2>/dev/null
+  [ -d extensions/Interwiki.git ] || git clone --mirror $MEDIAWIKI_GIT/extensions/Interwiki.git extensions/Interwiki.git 2>/dev/null
+  date +%s > last_fetch
+  cd ../../..
+fi
+
+# Begin tests
+cd tests/mediawiki
+
+# Test 1: Installation of MediaWiki 1.24 from tarball
+mw_test_title "Installation of MediaWiki 1.24 from tarball (version $REL1_24_release)" "mw-get install 1.24"
+../../mw-get install 1.24 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ -d skins/Vector ]" "Skin Vector is here"
+mw_test "[ -d extensions/Interwiki ]" "Extension Interwiki is here"
+mw_test "[ \"`../../mw-get branch`\" = 1.24 ]" "Installed branch is 1.24"
+mw_test "[ \"`../../mw-get version`\" = $REL1_24_release ]" "Installed version is $REL1_24_release"
+mw_test "[ \"`../../mw-get version`\" = 1.24.0 ]" "Installed version is 1.24.0" "expected_error"
+delete_mw
+
+# Test 2: Installation of MediaWiki 1.24.1 from tarball
+mw_test_title "Installation of MediaWiki 1.24.1 from tarball" "mw-get install 1.24.1"
+../../mw-get install 1.24.1 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ -d skins/Vector ]" "Skin Vector is here"
+mw_test "[ -d extensions/Interwiki ]" "Extension Interwiki is here"
+mw_test "[ \"`../../mw-get version`\" = 1.24.1 ]" "Installed version is 1.24.1"
+delete_mw
+
+# Test 3: Installation of latest MediaWiki version from git
+mw_test_title "Installation of latest MediaWiki version from git (branch $stable_branch, version $stable_release)" "mw-get install --git=../git/mediawiki"
+../../mw-get install --git=../git/mediawiki 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ ! -d skins/Vector ]" "Skin Vector is not here"
+mw_test "[ ! -d extensions/Interwiki ]" "Extension Interwiki is not here"
+mw_test "[ \"`../../mw-get branch`\" = $stable_branch ]" "Installed version is $stable_branch"
+mw_test "[ \"`../../mw-get version`\" = $stable_release ]" "Installed version is $stable_release"
+mw_test "[ \"`git status --ignored --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
+delete_mw
+
+# Test 4: Installation of latest MediaWiki LTS version from git
+mw_test_title "Installation of latest MediaWiki LTS version from git (branch $legacy_branch, version $legacy_release)" "mw-get install lts --git=../git/mediawiki"
+../../mw-get install lts --git=../git/mediawiki 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ ! -d skins/Vector ]" "Skin Vector is not here"
+mw_test "[ ! -d extensions/Interwiki ]" "Extension Interwiki is not here"
+mw_test "[ \"`../../mw-get branch`\" = $legacy_branch ]" "Installed version is $legacy_branch"
+mw_test "[ \"`../../mw-get version`\" = $legacy_release ]" "Installed version is $legacy_release"
+mw_test "[ \"`git status --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
+delete_mw
+
+# Test 5: Installation of MediaWiki 1.23.7 from git with skins Nostalgia and Vector and extensions Vector and Interwiki
+mw_test_title "Installation of MediaWiki 1.23.7 from git with skins Nostalgia and Vector and extensions Vector and Interwiki" "mw-get install 1.23.7 Nostalgia Vector extensions/Vector Interwiki --git=../git/mediawiki"
+../../mw-get install 1.23.7 Nostalgia Vector extensions/Vector Interwiki --git=../git/mediawiki 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ -d skins/Nostalgia ]" "Skin Nostalgia is not here"
+mw_test "[ -d skins/Vector ]" "Skin Vector is not here"
+mw_test "[ -d extensions/Vector ]" "Extension Vector is not here"
+mw_test "[ -d extensions/Interwiki ]" "Extension Interwiki is here"
+mw_test "[ \"`../../mw-get branch`\" = 1.23 ]" "Installed version is 1.23"
+mw_test "[ \"`../../mw-get version`\" = 1.23.7 ]" "Installed version is 1.23.7"
+mw_test "[ \"`git status --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
+
+# Test 6: Upgrade previous installation of MediaWiki 1.23.7 with git to latest security release of the branch
+mw_test_title "Upgrade previous installation of MediaWiki 1.23.7 with git to latest security release of the branch (version $REL1_23_release)" "mw-get upgrade"
+../../mw-get upgrade 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ -d skins/Nostalgia ]" "Skin Nostalgia is not here"
+mw_test "[ -d skins/Vector ]" "Skin Vector is not here"
+mw_test "[ -d extensions/Vector ]" "Extension Vector is not here"
+mw_test "[ -d extensions/Interwiki ]" "Extension Interwiki is here"
+mw_test "[ \"`../../mw-get branch`\" = 1.23 ]" "Installed version is 1.23"
+mw_test "[ \"`../../mw-get version`\" = $REL1_23_release ]" "Installed version is $REL1_23_release"
+mw_test "[ \"`git status --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
+
+# Test 7: Upgrade previous installation of MediaWiki 1.23.9 with git to branch 1.24
+mw_test_title "Upgrade previous installation of MediaWiki $REL1_23_release with git to branch 1.24 (version $REL1_24_release)" "mw-get major-upgrade 1.24"
+../../mw-get major-upgrade 1.24 2>/dev/null
+mw_test "[ -f index.php ]" "index.php is here"
+mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
+mw_test "[ -d skins/Nostalgia ]" "Skin Nostalgia is not here"
+mw_test "[ -d skins/Vector ]" "Skin Vector is not here"
+mw_test "[ -d extensions/Vector ]" "Extension Vector is not here"
+mw_test "[ -d extensions/Interwiki ]" "Extension Interwiki is here"
+mw_test "[ \"`../../mw-get branch`\" = 1.24 ]" "Installed version is 1.24"
+mw_test "[ \"`../../mw-get version`\" = $REL1_24_release ]" "Installed version is $REL1_24_release"
+mw_test "[ \"`git status --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
+delete_mw
+
+
+
+# Clean up test environment
+cd ../..
+rm -rf tests/mediawiki tests/backups tests/preprod
+
+# Display results
+echo
+if [ "$FAILED_TESTS" = "0" ]; then
+  echo "  Result: $TOTAL_TESTS tests, $PASSED_TESTS passed, and $FAILED_TESTS failed. WIN!"
+else
+  echo "  Result: $TOTAL_TESTS tests, $PASSED_TESTS passed, and $FAILED_TESTS failed."
+fi
+echo
+
