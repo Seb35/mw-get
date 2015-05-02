@@ -114,7 +114,7 @@ cd tests/mediawiki
 
 # Test 1: Installation of MediaWiki 1.24 from tarball
 mw_test_title "Installation of MediaWiki 1.24 from tarball (version $REL1_24_release)" "mw-get install 1.24"
-../../mw-get install 1.24 2>/dev/null
+../../mw-get install 1.24 --tests-cache=http://127.0.0.1/mediawiki/BRANCH/mediawiki-VERSION.tar.gz 2>/dev/null
 mw_test "[ -f index.php ]" "index.php is here"
 mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
 mw_test "[ -d skins/Vector ]" "Skin Vector is here"
@@ -126,7 +126,7 @@ delete_mw
 
 # Test 2: Installation of MediaWiki 1.24.1 from tarball
 mw_test_title "Installation of MediaWiki 1.24.1 from tarball" "mw-get install 1.24.1"
-../../mw-get install 1.24.1 2>/dev/null
+../../mw-get install 1.24.1 --tests-cache=http://127.0.0.1/mediawiki/BRANCH/mediawiki-VERSION.tar.gz 2>/dev/null
 mw_test "[ -f index.php ]" "index.php is here"
 mw_test "[ -f includes/DefaultSettings.php ]" "includes/DefaultSettings.php is here"
 mw_test "[ -d skins/Vector ]" "Skin Vector is here"
@@ -143,7 +143,7 @@ mw_test "[ ! -d skins/Vector ]" "Skin Vector is not here"
 mw_test "[ ! -d extensions/Interwiki ]" "Extension Interwiki is not here"
 mw_test "[ \"`../../mw-get branch`\" = $stable_branch ]" "Installed version is $stable_branch"
 mw_test "[ \"`../../mw-get version`\" = $stable_release ]" "Installed version is $stable_release"
-mw_test "[ \"`git status --ignored --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
+mw_test "[ \"`git status --porcelain`\" = \"\" ]" "Git directory is fresh, without polluting files"
 delete_mw
 
 # Test 4: Installation of latest MediaWiki LTS version from git
