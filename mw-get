@@ -492,7 +492,7 @@ execute_composer() {
     if [ "$DEV" = "true" ]; then
       composer update
     else
-      echo composer update --no-dev 1>&2
+      composer update --no-dev
     fi
   
   # 1.22 <= MediaWiki < 1.25
@@ -505,7 +505,7 @@ execute_composer() {
     if [ "$DEV" = "true" ]; then
       composer update
     else
-      echo composer update --no-dev 1>&2
+      composer update --no-dev
     fi
   fi
 }
